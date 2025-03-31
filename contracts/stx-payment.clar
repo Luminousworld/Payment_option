@@ -59,3 +59,84 @@ const Product = require('./models/Product');
 const Order = require('./models/Order');
 const Customer = require('./models/Customer');
 const Payment = require('./models/Payment');
+
+// Product routes
+app.use('/api/products', require('./routes/products'));
+
+// Repair service routes
+app.use('/api/repairs', require('./routes/repairs'));
+
+// Customer routes
+app.use('/api/customers', require('./routes/customers'));
+
+// Order routes
+app.use('/api/orders', require('./routes/orders'));
+
+// ========================
+// PAYMENT PROCESSING
+// ========================
+
+// Create payment intent for repairs
+app.post('/api/payments/repair-intent', async (req, res) => {
+  try {
+    const { repairId, customerId, paymentMethod } = req.body;
+    
+    // Validate inputs
+    if (!repairId || !customerId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required information' 
+      });
+    }
+    
+    // Get repair details
+    const repair = await Repair.findById(repairId);
+    if (!repair) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Repair record not found' 
+      });
+    }
+    
+    // Check customer
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Customer not found' 
+      });
+    }
+    
+    // Calculate amount in cents
+    const amount = Math.round(repair.totalCost * 100);
+    
+    // Create a PaymentIntent with the order amount and currency
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount,
+      currency: 'usd',
+      customer: customer.stripeCustomerId,
+      payment_method: paymentMethod,
+      description: `Repair ID: ${repair._id} - ${repair.repairType} for ${repair.instrumentType}`,
+      metadata: {
+        repairId: repair._id.toString(),
+        customerId: customer._id.toString(),
+        instrumentType: repair.instrumentType,
+        repairType: repair.repairType
+      },
+      receipt_email: customer.email
+    });
+    
+    // Create payment record in database
+    const payment = new Payment({
+      customerId: customer._id,
+      repairId: repair._id,
+      amount: repair.totalCost,
+      paymentIntentId: paymentIntent.id,
+      status: 'pending',
+      paymentMethod: paymentMethod ? 'card' : 'invoice',
+      metadata: {
+        description: `${repair.repairType} for ${repair.instrumentType}`,
+        technician: repair.assignedTechnician
+      }
+    });
+    
