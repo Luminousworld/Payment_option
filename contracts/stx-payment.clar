@@ -140,3 +140,82 @@ app.post('/api/payments/repair-intent', async (req, res) => {
       }
     });
     
+await payment.save();
+    
+    // Update repair status
+    repair.paymentStatus = 'pending';
+    await repair.save();
+    
+    res.status(200).json({
+      success: true,
+      clientSecret: paymentIntent.client_secret,
+      paymentId: payment._id
+    });
+    
+  } catch (error) {
+    console.error('Payment intent creation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Payment processing error',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+    });
+  }
+});
+
+// Process payment for accessories or parts
+app.post('/api/payments/product-order', async (req, res) => {
+  try {
+    const { items, customerId, shippingAddress, paymentMethod } = req.body;
+    
+    // Validate inputs
+    if (!items || !items.length || !customerId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required information' 
+      });
+    }
+    
+    // Get customer
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Customer not found' 
+      });
+    }
+    
+    // Get product details and calculate total
+    const productIds = items.map(item => item.productId);
+    const products = await Product.find({ _id: { $in: productIds } });
+    
+    // Create order items with validated products
+    const orderItems = [];
+    let subtotal = 0;
+    
+    for (const item of items) {
+      const product = products.find(p => p._id.toString() === item.productId);
+      if (!product) {
+        return res.status(404).json({ 
+          success: false, 
+          message: `Product not found: ${item.productId}` 
+        });
+      }
+      
+      // Check inventory
+      if (product.stockQuantity < item.quantity) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient stock for product: ${product.name}` 
+        });
+      }
+      
+      const itemPrice = product.salePrice || product.regularPrice;
+      const itemTotal = itemPrice * item.quantity;
+      
+      orderItems.push({
+        productId: product._id,
+        name: product.name,
+        price: itemPrice,
+        quantity: item.quantity,
+        totalPrice: itemTotal
+      });
