@@ -415,4 +415,20 @@ async function handleFailedPayment(paymentIntent) {
       await Repair.findByIdAndUpdate(payment.repairId, { 
         paymentStatus: 'failed'
       });
-      
+       // Send payment failure notification
+      await sendPaymentFailureEmail(payment.customerId, 'repair', payment.repairId);
+    }
+    
+    console.log(`Payment ${paymentIntent.id} failed processing`);
+    
+  } catch (error) {
+    console.error('Error processing failed payment:', error);
+  }
+}
+
+// Start server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Export app for testing
+module.exports = app;
