@@ -1,30 +1,30 @@
 
-;; title: stx-payment
-;; version:
-;; summary:
-;; description:
+const express = require('express');
+const bodyParser = require('body-parser');
+const mongoose = require('mongoose');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const morgan = require('morgan');
+const dotenv = require('dotenv');
+const session = require('express-session');
+const MongoStore = require('connect-mongo');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const crypto = require('crypto');
 
-;; traits
-;;
+// Load environment variables
+dotenv.config();
 
-;; token definitions
-;;
+// Initialize Express app
+const app = express();
 
-;; constants
-;;
+// Security middleware
+app.use(helmet());
+app.use(morgan('combined'));
 
-;; data vars
-;;
-
-;; data maps
-;;
-
-;; public functions
-;;
-
-;; read only functions
-;;
-
-;; private functions
-;;
-
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later'
+});
+app.use('/api/', limiter);
