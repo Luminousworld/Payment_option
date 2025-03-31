@@ -219,3 +219,76 @@ app.post('/api/payments/product-order', async (req, res) => {
         quantity: item.quantity,
         totalPrice: itemTotal
       });
+       subtotal += itemTotal;
+    }
+    
+    // Calculate tax and total
+    const taxRate = 0.0825; // 8.25% tax rate
+    const taxAmount = subtotal * taxRate;
+    const shipping = subtotal > 100 ? 0 : 9.95; // Free shipping over $100
+    const total = subtotal + taxAmount + shipping;
+    
+    // Create order
+    const order = new Order({
+      customerId: customer._id,
+      items: orderItems,
+      subtotal,
+      tax: taxAmount,
+      shippingFee: shipping,
+      total,
+      shippingAddress: shippingAddress || customer.address,
+      status: 'pending'
+    });
+    
+    await order.save();
+    
+    // Create Stripe PaymentIntent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(total * 100),
+      currency: 'usd',
+      customer: customer.stripeCustomerId,
+      payment_method: paymentMethod,
+      description: `Order ID: ${order._id} - Clarinet accessories/parts`,
+      metadata: {
+        orderId: order._id.toString(),
+        customerId: customer._id.toString()
+      },
+      receipt_email: customer.email
+    });
+    
+    // Create payment record
+    const payment = new Payment({
+      customerId: customer._id,
+      orderId: order._id,
+      amount: total,
+      paymentIntentId: paymentIntent.id,
+      status: 'pending',
+      paymentMethod: paymentMethod ? 'card' : 'invoice',
+      metadata: {
+        items: orderItems.length,
+        shipping: shipping > 0 ? 'standard' : 'free'
+      }
+    });
+    
+    await payment.save();
+    
+    // Update order with payment reference
+    order.paymentId = payment._id;
+    await order.save();
+    
+    res.status(200).json({
+      success: true,
+      orderId: order._id,
+      clientSecret: paymentIntent.client_secret,
+      paymentId: payment._id
+    });
+    
+  } catch (error) {
+    console.error('Order payment processing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Payment processing error',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+    });
+  }
+});
