@@ -292,3 +292,127 @@ app.post('/api/payments/product-order', async (req, res) => {
     });
   }
 });
+// Webhook to handle Stripe events
+app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+  
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+  
+  // Handle the event
+  switch (event.type) {
+    case 'payment_intent.succeeded':
+      const paymentIntent = event.data.object;
+      await handleSuccessfulPayment(paymentIntent);
+      break;
+      
+    case 'payment_intent.payment_failed':
+      const failedPayment = event.data.object;
+      await handleFailedPayment(failedPayment);
+      break;
+      
+    default:
+      console.log(`Unhandled event type ${event.type}`);
+  }
+  
+  // Return a 200 response to acknowledge receipt of the event
+  res.status(200).json({received: true});
+});
+
+// Handle successful payments
+async function handleSuccessfulPayment(paymentIntent) {
+  try {
+    // Find associated payment record
+    const payment = await Payment.findOne({ paymentIntentId: paymentIntent.id });
+    if (!payment) {
+      console.error('Payment record not found for PaymentIntent:', paymentIntent.id);
+      return;
+    }
+    
+    // Update payment status
+    payment.status = 'completed';
+    payment.transactionDate = new Date();
+    payment.receiptUrl = paymentIntent.charges.data[0]?.receipt_url;
+    await payment.save();
+    
+    // Update order or repair status
+    if (payment.orderId) {
+      // Product order payment
+      const order = await Order.findById(payment.orderId);
+      if (order) {
+        order.status = 'paid';
+        order.paymentStatus = 'completed';
+        await order.save();
+        
+        // Update inventory
+        for (const item of order.items) {
+          await Product.updateOne(
+            { _id: item.productId },
+            { $inc: { stockQuantity: -item.quantity } }
+          );
+        }
+        
+        // Send order confirmation email
+        await sendOrderConfirmationEmail(order._id);
+      }
+    } else if (payment.repairId) {
+      // Repair service payment
+      const repair = await Repair.findById(payment.repairId);
+      if (repair) {
+        repair.paymentStatus = 'completed';
+        if (repair.status === 'waiting_for_payment') {
+          repair.status = 'scheduled';
+        }
+        await repair.save();
+        
+        // Send repair payment confirmation email
+        await sendRepairConfirmationEmail(repair._id);
+      }
+    }
+    
+    console.log(`Payment ${paymentIntent.id} processed successfully`);
+    
+  } catch (error) {
+    console.error('Error processing successful payment:', error);
+  }
+}
+
+// Handle failed payments
+async function handleFailedPayment(paymentIntent) {
+  try {
+    // Find associated payment record
+    const payment = await Payment.findOne({ paymentIntentId: paymentIntent.id });
+    if (!payment) {
+      console.error('Payment record not found for failed PaymentIntent:', paymentIntent.id);
+      return;
+    }
+    
+    // Update payment status
+    payment.status = 'failed';
+    payment.lastError = paymentIntent.last_payment_error?.message || 'Payment failed';
+    await payment.save();
+    
+    // Update order or repair status
+    if (payment.orderId) {
+      await Order.findByIdAndUpdate(payment.orderId, { 
+        status: 'payment_failed',
+        paymentStatus: 'failed'
+      });
+      
+      // Send payment failure notification
+      await sendPaymentFailureEmail(payment.customerId, 'order', payment.orderId);
+      
+    } else if (payment.repairId) {
+      await Repair.findByIdAndUpdate(payment.repairId, { 
+        paymentStatus: 'failed'
+      });
+      
